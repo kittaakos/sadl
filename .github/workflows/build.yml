@@ -1,0 +1,102 @@
+name: SADL Build
+
+on:
+  push:
+    branches:
+      - development
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - development
+
+jobs:
+
+  build:
+    strategy:
+      matrix:
+        config:
+          - os: windows-latest
+          - os: ubuntu-latest
+          - os: macos-latest
+    runs-on: ${{ matrix.config.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Install Java 8
+        uses: actions/setup-java@v1
+        with:
+          java-version: 8
+
+      - name: Clean SADL
+        shell: bash
+        run: |
+            mvn -f ./sadl3/com.ge.research.sadl.parent/pom.xml clean
+
+      - name: Build SADL
+        uses: GabrielBB/xvfb-action@v1
+        with:
+          run: mvn -f ./sadl3/com.ge.research.sadl.parent/pom.xml verify -U
+
+      - name: Upload Language Server
+        if: runner.OS == 'Linux'
+        uses: actions/upload-artifact@v2
+        with:
+          name: languageserver
+          path: ./sadl3/com.ge.research.sadl.parent/com.ge.research.sadl.ide/target/languageserver
+
+  web:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Install Node.js 10.x
+        uses: actions/setup-node@v1
+        with:
+          node-version: '10.15.3'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install Python 2.7
+        uses: actions/setup-python@v2
+        with:
+          python-version: '2.7'
+
+      - name: Download Language Server
+        uses: actions/download-artifact@v2
+        with:
+          name: languageserver
+          path: ./sadl3/com.ge.research.sadl.parent/com.ge.research.sadl.ide/target/languageserver
+
+      - name: Build Web
+        env:
+          PUPPETEER_SKIP_CHROMIUM_DOWNLOAD: true
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+            yarn --cwd ./sadl3/com.ge.research.sadl.parent/theia-sadl-extension
+
+      - name: npm Publish
+        if: github.ref == 'refs/heads/development'
+        env:
+          NPM_AUTH_TOKEN: ${{ secrets.NPM_AUTH_TOKEN }}
+        run: |
+            printf "//registry.npmjs.org/:_authToken=${NPM_AUTH_TOKEN}\n" >> ~/.npmrc
+            yarn --cwd ./sadl3/com.ge.research.sadl.parent/theia-sadl-extension run publish:next
+
+      - name: Build Docker
+        if: github.ref == 'refs/heads/development'
+        run: |
+            npm install --global node-gyp@6.0.1
+            npm config set node_gyp "`npm prefix -g`/lib/node_modules/node-gyp/bin/node-gyp.js"
+            echo "npm config get node_gyp -> `npm config get node_gyp`"
+            ./sadl3/com.ge.research.sadl.parent/theia-sadl-extension/scripts/build-docker.sh
+
+      - name: Docker Publish
+        if: github.ref == 'refs/heads/development'
+        uses: elgohr/Publish-Docker-Github-Action@2.22
+        with:
+          name: theiaide/sadl
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+          workdir: ./sadl3/com.ge.research.sadl.parent/theia-sadl-extension/browser-app
